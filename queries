@@ -1,0 +1,180 @@
+-- 1. Ranking de Restaurantes (Window Function)
+-- Qual é o restaurante que mais faturou (soma de valor_total dos pedidos com status 'Entregue') dentro de cada categoria? Retorne a categoria, o nome do restaurante, 
+-- o faturamento total e o ranking dele (1, 2, 3...) particionado por categoria.
+with total_res as (
+select r.nome, r.categoria,
+sum(p.valor_total) as total
+ from restaurantes r
+
+join pedidos p on r.id_restaurante = p.id_restaurante
+
+where p.status_pedido = 'Entregue'
+
+group by r.nome, r.categoria
+),
+
+maiores as (
+select *,
+DENSE_RANK() over (partition by categoria order by total desc) as ranking
+ from total_res
+ )
+ 
+ select * from maiores
+ where ranking = 1
+ 
+ order by total desc;
+ 
+--  2. Eficiência Logística
+-- Qual é o tempo médio de entrega (em minutos) para cada tipo_veiculo? Considere apenas pedidos com status 'Entregue'.
+with tempo_pedidos as (
+SELECT p.id_pedido, e.tipo_veiculo,
+TIMESTAMPDIFF(minute, p.data_hora_pedido, p.data_hora_entrega) as minutos
+FROM pedidos p
+JOIN entregadores e ON p.id_entregador = e.id_entregador
+WHERE p.status_pedido = 'Entregue'
+
+)
+
+select tipo_veiculo, 
+round(avg(minutos),2) as media
+from tempo_pedidos
+
+group by tipo_veiculo
+order by media;
+
+-- 3. Retenção de Clientes
+-- Identifique os clientes que fizeram mais de 2 pedidos no mês de Novembro de 2023. Retorne o nome do cliente, a cidade e a quantidade exata de pedidos.
+select c.nome, c.cidade,
+count(p.id_pedido) as qtde_pedidos
+ from clientes c 
+
+join pedidos p on c.id_cliente = p.id_cliente
+
+where p.data_hora_pedido >= '2023-11-01'
+and p.data_hora_pedido < '2023-12-01'
+
+group by c.id_cliente, c.nome, c.cidade
+having count(p.id_pedido) > 2;
+
+-- 4. Ticket Médio Cruzado
+-- Calcule o Ticket Médio (média do valor_total) dos pedidos entregues, agrupado por estado do cliente.
+select c.estado,
+round(avg(p.valor_total), 2) as media
+ from pedidos p
+ 
+ join clientes c on p.id_cliente = c.id_cliente
+ 
+ where p.status_pedido = 'Entregue'
+
+ group by c.estado
+ order by media desc;
+ 
+--  5. O Problema do "Tempo de Espera"
+-- Identifique os entregadores que tiveram um tempo de entrega (diferença entre data_hora_pedido e data_hora_entrega) superior a 45 minutos em pelo menos um pedido. Retorne o nome do entregador e o tipo de veículo.
+select e.nome, e.tipo_veiculo, 
+TIMESTAMPDIFF(minute, p.data_hora_pedido, p.data_hora_entrega) as minutos
+ from entregadores e
+
+join pedidos p on e.id_entregador = p.id_entregador
+
+where p.status_pedido = 'Entregue'
+and TIMESTAMPDIFF(minute, p.data_hora_pedido, p.data_hora_entrega) > 45
+
+order by minutos desc;
+
+
+-- 6. Análise de Risco Operacional
+-- Qual é a taxa de cancelamento geral da plataforma? Crie uma query que retorne o total de pedidos, o total de pedidos cancelados e a porcentagem que os cancelamentos representam do total.
+select count(*) as total,
+count(case when p.status_pedido = 'Cancelado' then 1 end ) as total_cancelados,
+round(count(case when p.status_pedido = 'Cancelado' then 1 end ) * 100.00
+/
+count(*),2) as taxa
+
+from pedidos p;
+
+-- 7. "Top of Mind"
+-- Qual foi o prato (nome_prato da tabela itens_pedido) mais vendido em quantidade total de unidades (quantidade) para a categoria de restaurante 'Lanches'?
+select ip.nome_prato,
+sum(ip.quantidade) as quantidade
+ from pedidos p
+ 
+ join itens_pedido ip on p.id_pedido = ip.id_pedido
+ join restaurantes r on p.id_restaurante = r.id_restaurante
+
+where r.categoria = 'Lanches'
+
+group by ip.nome_prato
+order by quantidade desc
+limit 1;
+
+-- 8. Avaliação de Qualidade Tripla
+-- Mostre os 3 restaurantes que possuem a pior média de avaliação (nota_restaurante), mas que têm pelo menos 2 pedidos avaliados. Retorne o nome do restaurante e a média da nota.
+select r.nome,
+avg(a.nota_restaurante) media
+ from restaurantes r 
+
+join pedidos p on r.id_restaurante = p.id_restaurante
+join avaliacoes a on p.id_pedido = a.id_pedido
+
+group by r.id_restaurante, r.nome
+having count(a.id_avaliacao) >= 2
+order by media asc
+limit 3;
+
+
+-- 9. Frequência de Compra
+-- Para a cliente 'Ana Silva' (ID 1), mostre todos os pedidos entregues, a data do pedido e quantos dias se passaram entre cada pedido realizado por ela.
+
+with dias_p as (
+select c.nome, p.id_pedido, p.data_hora_pedido,
+lag(p.data_hora_pedido) over (partition by p.id_cliente order by p.data_hora_pedido) as dias_lag
+  from clientes c
+
+join pedidos p on c.id_cliente = p.id_cliente 
+
+where c.id_cliente = 1
+and p.status_pedido = 'Entregue'
+)
+
+select nome, id_pedido, data_hora_pedido,
+coalesce(datediff(data_hora_pedido, dias_lag),0) as dias_passados
+ from dias_p;
+
+
+-- 10. Curva ABC de Faturamento
+-- Liste todos os clientes e o valor total gasto por eles. Adicione uma coluna calculando a soma acumulada do faturamento total da plataforma, ordenando do cliente que mais gastou para o que menos gastou.
+with total_c as (
+select c.id_cliente, c.nome,
+sum(p.valor_total) as total
+ from clientes c
+
+join pedidos p on c.id_cliente = p.id_cliente
+
+where p.status_pedido = 'Entregue'
+
+group by c.id_cliente, c.nome
+),
+
+acumulado as (
+select *,
+sum(total) over (order by total desc) as soma_acumulada,
+round(sum(total) over (order by total desc) 
+/
+sum(total) over (),2) as percentual_acumulado
+from total_c
+ 
+ order by total desc
+ )
+ 
+ select *,
+ case
+when percentual_acumulado <= 0.80 then 'A'
+when percentual_acumulado <= 0.95 then 'B'
+else 'C'
+end as classe_abc
+ from acumulado;
+
+ 
+
+
