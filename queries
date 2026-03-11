@@ -175,6 +175,199 @@ else 'C'
 end as classe_abc
  from acumulado;
 
+
+-- 11. Horário de Pico (Análise de Série Temporal)
+-- Qual é o horário de pico absoluto da plataforma? Determine qual hora do dia (ex: 18h, 19h, 20h) possui o maior volume histórico de pedidos finalizados (status 'Entregue'). 
+-- Retorne a hora isolada e a quantidade total de pedidos daquela hora.
+
+with horas_p as (
+select id_pedido, hour(data_hora_entrega) as horas from pedidos
+
+where status_pedido = 'Entregue'
+)
+
+select horas,
+count(id_pedido) as qtde
+ from horas_p
  
+ group by horas
+ order by qtde desc
+ limit 1;
+ 
+ 
+--  12. Fidelidade Multi-Categoria (Contagem Distinta Condicional)
+-- Queremos encontrar os clientes com paladar mais diversificado. Liste os clientes que já fizeram pedidos (Entregues) em pelo menos 3 categorias diferentes de restaurantes.
+--  Retorne o nome do cliente e a quantidade de categorias distintas que ele já consumiu.
+ 
+ select c.nome, count(distinct r.categoria) as qtde_categorias from clientes c
+  
+ join pedidos p on c.id_cliente = p.id_cliente
+ join restaurantes r on p.id_restaurante = r.id_restaurante
+ 
+ where p.status_pedido = 'Entregue'
+ 
+ group by c.id_cliente, c.nome
+ having count(distinct r.categoria) >= 3;
+ 
+ 
+--  13. Impacto do Atraso na Avaliação (Agregação Cruzada)
+-- Será que a demora destrói a nota do entregador? Calcule a média da nota_entregador dividida em dois grupos estritos: pedidos com tempo de entrega menor ou igual a 45 minutos, e pedidos com tempo superior a 45 minutos.
+--  Retorne o nome do grupo e a média da nota.
+
+with entregas_m as (
+select *,
+TIMESTAMPDIFF(minute, data_hora_pedido, data_hora_entrega) as minutos
+ from pedidos 
+)
+
+select round(avg(a.nota_entregador),2) as media_nota,
+case when minutos <= 45 then 'Menor Igual 45'
+else 'Maior 45'
+end as grupos
+ from entregas_m em
+ 
+ join avaliacoes a on em.id_pedido = a.id_pedido
+ 
+ group by grupos
+ order by media_nota desc; 
+ 
+--  14. Crescimento Diário de Receita (Day-over-Day Growth)
+-- Calcule a receita total diária (apenas pedidos 'Entregues') e use funções de janela para mostrar o crescimento ou queda percentual da receita em relação ao dia anterior. Retorne a data, a receita do dia e o percentual de variação.
+
+with dias_p as (
+select substr(data_hora_entrega, 1, 11) as dias,
+sum(valor_total) as total
+ from pedidos p
+
+where p.status_pedido = 'Entregue'
+
+group by substr(data_hora_entrega, 1, 11)
+order by dias asc
+),
+
+dia_anterior as (
+select dias, total,
+lag(total) over (order by dias) as total_anterior
+ from dias_p
+)
+
+select dias, total,
+round(coalesce((total - total_anterior) 
+/
+nullif(total_anterior, 0),0), 2) as percentual
+ from dia_anterior;
+ 
+ 
+--  15. O Entregador "Perfeito" (Anti-Join e Filtros Excludentes)
+-- A operação quer premiar a elite da frota. Identifique os entregadores que realizaram pelo menos 2 entregas no histórico, que nunca tiveram um pedido associado a eles cancelado na plataforma,
+--  e que possuem a média de nota_entregador exatamente igual a 5.0.
+
+select e.id_entregador, e.nome, round(avg(a.nota_entregador),1) as media from entregadores e
+
+join pedidos p on e.id_entregador = p.id_entregador
+join avaliacoes a on p.id_pedido = a.id_pedido
+
+where (p.status_pedido = 'Entregue')
+and
+(not exists (
+select 1 
+from pedidos p2
+where p2.id_entregador = e.id_entregador
+and p2.status_pedido = 'Cancelado'
+) )
+
+group by e.id_entregador, e.nome
+having (avg(a.nota_entregador) = 5.0) and (count(data_hora_entrega) >= 2)
+order by e.nome;
+
+
+-- 16. Receita: Novos vs. Recorrentes (Classificação Dinâmica)
+-- Precisamos saber de onde vem o nosso dinheiro. Classifique cada pedido 'Entregue' como 'Primeiro Pedido' (a primeira compra histórica de um cliente) ou 'Recorrente' (qualquer compra subsequente daquele mesmo cliente). 
+-- Em seguida, calcule o faturamento total da plataforma gerado por 'Primeiros Pedidos' versus 'Recorrentes'.
+
+with ordenando as (
+select p.id_cliente, c.nome, p.valor_total, p.data_hora_entrega,
+row_number() over (partition by c.id_cliente order by p.data_hora_entrega asc) as datas_pedidos
+from pedidos p
+
+ join clientes c on p.id_cliente = c.id_cliente
+
+ where status_pedido = 'Entregue'
+ )
+ 
+ select 
+ sum(case when datas_pedidos = 1 then valor_total ELSE 0 END) as total_primeiros_pedidos,
+ sum(case when datas_pedidos != 1 then valor_total ELSE 0 END) as total_pedidos_recorrentes
+ from ordenando;
+ 
+--  17. Sensibilidade à Taxa de Entrega (Cálculo Proporcional)
+-- Existem restaurantes onde o cliente paga caro só para o prato chegar. Qual restaurante possui a maior proporção média entre a taxa_entrega e o valor_total do pedido? 
+-- Retorne o nome do restaurante e essa proporção percentual média (ex: a taxa representa 15% do valor do pedido).
+
+select r.nome, round(AVG(r.taxa_entrega / p.valor_total) * 100.00, 2) as taxa from pedidos p
+
+join restaurantes r on p.id_restaurante = r.id_restaurante
+
+group by r.id_restaurante
+order by taxa desc;
+
+-- 18. Detecção de Anomalia em Volumes (Outliers Internos)
+-- O time de fraudes suspeita de pedidos com quantidades irreais. Encontre os itens de pedido (nome_prato) cuja quantidade solicitada em um único pedido seja maior que o dobro (2x) 
+-- da média histórica de quantidade vendida por pedido para aquele prato específico em toda a base.
+with soma_p as (
+select p.id_pedido,nome_prato, sum(ip.quantidade) as soma from pedidos p
+
+join itens_pedido ip on p.id_pedido = ip.id_pedido
+
+group by p.id_pedido,nome_prato
+),
+
+soma_historica as (
+select nome_prato, avg(quantidade) as soma from itens_pedido
+
+group by nome_prato
+)
+
+select sp.nome_prato from soma_p sp
+
+join soma_historica sh on sp.nome_prato = sh.nome_prato
+
+where sp.soma > (sh.soma * 2);
+
+
+-- 19. Ticket Médio Ponderado por Nota (Matemática Condicional)
+-- Existe correlação entre o quanto o cliente gasta e a nota que ele dá ao restaurante? Calcule o Ticket Médio (média do valor_total) agrupado exatamente pelas notas recebidas pelos restaurantes (1, 2, 3, 4 e 5). 
+-- Considere apenas pedidos entregues que possuam avaliação do restaurante registrada.
+
+select a.nota_restaurante,
+round(avg(p.valor_total), 2) as media
+ from pedidos p
+
+join avaliacoes a on p.id_pedido = a.id_pedido
+ 
+ where (p.status_pedido = 'Entregue')
+
+group by a.nota_restaurante
+order by media desc;
+
+
+-- 20. Churn Precoce (Análise Relativa de Inatividade)
+-- Considerando a data do último pedido registrado em toda a plataforma como a nossa "data atual" de análise, identifique os clientes que realizaram seu primeiro e único pedido, 
+-- mas já não compram há mais de 5 dias (em relação a essa "data atual"). Retorne o nome do cliente, a data do único pedido e há quantos dias ele está inativo.
+
+with clientes_1_pedido as (
+select p.id_cliente, min(data_hora_entrega) as min, count(id_pedido)
+ from pedidos p
+ 
+group by p.id_cliente
+having count(id_pedido) = 1
+)
+
+select c.nome, datediff((select max(data_hora_entrega) from pedidos), c1.min) as conta
+from clientes_1_pedido c1
+
+join clientes c on c1.id_cliente = c.id_cliente
+
+where datediff((select max(data_hora_entrega) from pedidos), c1.min) > 5;
 
 
