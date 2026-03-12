@@ -370,4 +370,94 @@ join clientes c on c1.id_cliente = c.id_cliente
 
 where datediff((select max(data_hora_entrega) from pedidos), c1.min) > 5;
 
+-- 21. Análise de Cesta de Compras (Market Basket Analysis)
+-- Quais pratos são mais consumidos juntos? Escreva uma query que identifique os pares de pratos (nome_prato) que aparecem juntos no mesmo pedido com maior frequência. 
+-- Retorne o nome do Prato A, o nome do Prato B e a quantidade de vezes que eles foram comprados no mesmo id_pedido. (Atenção para não duplicar o par invertendo a ordem: A-B é o mesmo que B-A).
+select ip.nome_prato, ip2.nome_prato, count(*) as frequencia from itens_pedido ip 
+
+join itens_pedido ip2 on ip.id_pedido = ip2.id_pedido
+
+where ip.nome_prato < ip2.nome_prato
+
+group  by ip.nome_prato, ip2.nome_prato
+
+order by frequencia desc;
+
+-- 22. Azar Consecutivo (Janelas de Cancelamento)
+-- Identifique os clientes que tiveram 2 ou mais pedidos seguidos com o status 'Cancelado'. Use funções de janela (como LAG ou LEAD) para verificar a sequência cronológica dos pedidos de cada cliente.
+
+with status_anterior as (
+select p.id_cliente, c.nome, p.status_pedido,
+lag(status_pedido) over (partition by id_cliente order by data_hora_pedido) as anterior
+ from pedidos p 
+ 
+ join clientes c on p.id_cliente = c.id_cliente
+ 
+)
+
+select distinct nome from status_anterior
+
+where status_pedido = anterior
+and status_pedido = 'Cancelado'; 
+
+
+-- 23. Média Móvel de Tempo de Entrega (Rolling Average Logs)
+-- Vamos monitorar o cansaço do entregador 'Carlos Moto' (ID 1). Calcule a média móvel do tempo de entrega (em minutos) dele, considerando o pedido atual e os 2 pedidos imediatamente anteriores a ele.
+--  Retorne o ID do pedido, a data/hora e a média móvel de tempo.
+
+with minutos_e as (
+select e.id_entregador, p.id_pedido, p.data_hora_entrega, timestampdiff(minute, data_hora_pedido, data_hora_entrega) as minutos from pedidos p 
+
+join entregadores e on p.id_entregador = e.id_entregador
+
+where e.id_entregador = 1
+)
+
+select *,
+round(avg(minutos) over (partition by id_entregador order by data_hora_entrega ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),2) as media_movel
+ from minutos_e;
+
+
+-- 24. Market Share por Categoria (Percentual de Participação)
+-- Descubra a fatia de mercado de cada categoria gastronômica. Retorne a categoria, o faturamento total daquela categoria (pedidos entregues)
+--  e o percentual que esse valor representa sobre o faturamento total absoluto de toda a plataforma (Market Share).
+
+with total_plataforma as (
+select sum(valor_total) as total_p from pedidos p
+where p.status_pedido = 'Entregue'
+),
+
+total_categorias as (
+select r.categoria, sum(valor_total) as total_categoria from pedidos p
+
+join restaurantes r on p.id_restaurante = r.id_restaurante
+
+where p.status_pedido = 'Entregue'
+
+group by r.categoria
+)
+
+select categoria,total_categoria,
+round(total_categoria / (select total_p from total_plataforma),2) as percentual
+
+ from total_categorias
+
+order by percentual desc;
+
+
+-- 25. Receita por Safra (Análise de Cohort Mensal)
+-- Defina o "Mês de Safra" (Cohort) de um cliente como o mês em que ele realizou seu primeiro pedido na plataforma. Calcule o faturamento total gerado no sistema agrupado por essas Safras. 
+-- Retorne o Mês da Safra e o faturamento total correspondente gerado por esses clientes em toda a vida útil deles.
+
+with primeiro_pedido as (
+select id_cliente,  min(data_hora_pedido) as primeira from pedidos p 
+
+group by id_cliente
+)
+
+select substr(pp.primeira,1 , 7) as mes_safra, sum(p.valor_total) as total from primeiro_pedido pp
+
+join pedidos p on pp.id_cliente = p.id_cliente
+
+group by  substr(pp.primeira,1 , 7);
 
