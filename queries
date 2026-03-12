@@ -461,3 +461,140 @@ join pedidos p on pp.id_cliente = p.id_cliente
 
 group by  substr(pp.primeira,1 , 7);
 
+
+-- 26. Consistência Logística (Gaps & Islands Avançado)
+-- Queremos premiar a assiduidade. Descubra qual entregador trabalhou (ou seja, realizou pelo menos uma entrega com sucesso) no maior número de dias consecutivos.
+--  Retorne o nome do entregador e o número máximo de dias ininterruptos trabalhados.
+
+with datas_e as (
+select distinct e.id_entregador, e.nome, date(p.data_hora_entrega) as dias
+ from pedidos p
+
+join entregadores e on p.id_entregador = e.id_entregador
+
+where p.status_pedido = 'Entregue'
+),
+
+dia_anterior as (
+
+select id_entregador, nome, dias,
+lag(dias) over (partition by id_entregador order by dias) as data_antiga
+ from datas_e
+),
+
+diferenca_dias as (
+select id_entregador, nome,dias,data_antiga,
+case 
+when coalesce(TIMESTAMPDIFF(day, data_antiga, dias), 0) != 1 then 1
+else 0
+end as diferenca 
+from dia_anterior
+),
+
+soma_dias as (
+select id_entregador, nome, sum(diferenca) over (partition by id_entregador order by dias) as soma
+ from diferenca_dias
+ )
+
+select id_entregador, nome, count(*) qtde from soma_dias
+
+group by id_entregador, nome, soma
+order by qtde desc 
+limit 1 ;
+
+
+-- 27. Fechamento de Faturamento MTD (Month-to-Date)
+-- Para o restaurante 'Burger King' (ID 1), construa um relatório financeiro diário. Retorne a data (apenas o dia), a receita gerada naquele dia específico e a receita acumulada do mês (MTD - Month-to-Date).
+-- A soma acumulada deve ser "resetada" automaticamente se houver virada de mês (embora nossa amostra seja em novembro, sua query deve prever isso usando PARTITION BY).
+
+with total_dia as (
+select substr( data_hora_entrega,1, 10) as dias, sum(valor_total) as total_dia from pedidos 
+
+where id_restaurante = 1
+
+group by substr( data_hora_entrega,1, 10)
+)
+
+select right(dias, 2) as dias, total_dia, 
+sum(total_dia) over (partition by substr(dias, 1, 7) order by dias ) as acumulado_mes
+ from total_dia;
+ 
+ 
+--  28. Cross-Join Simples (Garantindo Zeros no Relatório)
+-- A diretoria quer ver todos os restaurantes, independentemente de terem vendido ou não em uma data específica. Crie uma query usando CROSS JOIN para cruzar todos os Restaurantes com os meses disponíveis nos registros de pedidos. 
+-- Mostre o nome do restaurante, o mês e o faturamento. Se o restaurante não faturou nada naquele mês, mostre 0 (e não NULL).
+ 
+ with mes as (
+SELECT DISTINCT substr(p.data_hora_entrega,1,7) as meses
+from pedidos p
+where p.data_hora_entrega is not null
+
+)
+
+select m.meses, r.nome, coalesce(sum(p.valor_total),0) as soma from restaurantes r 
+cross join mes m
+left join pedidos p on r.id_restaurante = p.id_restaurante
+and substr(p.data_hora_entrega,1,7) = m.meses
+
+group by m.meses, r.nome;
+
+
+	-- 29. O "Top 10%"
+	-- Isole a "nata" dos seus consumidores. Usando funções de distribuição ou particionamento, liste apenas os clientes que estão no Top 10% dos que mais geraram faturamento para a plataforma. Retorne o nome do cliente e o valor total gasto por ele.
+
+	with total_c as (
+	select c.nome, sum(p.valor_total) as total from pedidos p
+
+	join clientes c on p.id_cliente = c.id_cliente
+
+	group by c.id_cliente, c.nome
+	),
+     
+     top_10 as (
+	select nome, total, 
+	PERCENT_RANK() over (order by total desc) as porcentagem
+	from total_c
+    )
+    
+    select nome, total from top_10
+    
+	where porcentagem <= 0.10;
+    
+    
+--     30. [Stored Procedure] Motor de Bônus Automático
+-- Crie uma Stored Procedure chamada CalcularBonusEntregador que receba como parâmetro de entrada o id_entregador. A procedure deve fazer o seguinte:
+
+-- Calcular a média das notas (nota_entregador) desse profissional.
+
+-- Contar quantas entregas concluídas ('Entregue') ele possui.
+
+-- Se o entregador tiver uma média de notas maior ou igual a 4.5 E mais de 3 entregas, a procedure deve retornar a mensagem: 'Bônus de R$ 100,00 Aprovado'. Caso contrário, deve retornar: 'Critérios não atingidos'. 
+-- (Pode retornar através de um SELECT simples dentro da procedure).
+
+DELIMITER $$
+create procedure CalcularBonusEntregador (in id_do_entregador INT)
+BEGIN
+
+declare media_entregador decimal(3,2);
+declare qtde_entregador int;
+ 
+select round(avg(nota_entregador),2), count(p.data_hora_entrega) into media_entregador, qtde_entregador
+from avaliacoes a
+
+join pedidos p on a.id_pedido = p.id_pedido
+
+where status_pedido = 'Entregue'
+and p.id_entregador = id_do_entregador;
+
+if media_entregador >= 4.5 and qtde_entregador > 3 and media_entregador is not null
+then
+select 'Bônus de R$ 100,00 Aprovado' as resultado;
+else 
+select 'Critérios não atingidos';
+end if;
+
+end $$
+
+DELIMITER ;
+
+CALL CalcularBonusEntregador(1);
